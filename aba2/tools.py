@@ -233,4 +233,38 @@ def results_to_text(results) -> str:
         f"- {r['name']}: {r['value']:g} {r['unit']} (report range {r['range_text']}) -> {r['status']}"
         for r in results
     )
+
+# ---------------------------------------------------------------------------
+# Demo data so the app works without a PDF
+# ---------------------------------------------------------------------------
+SAMPLE_REPORT = """CITY DIAGNOSTICS LAB
+Patient Name : Demo Patient    Age : 34 Years    Sex : Male
+COMPLETE BLOOD COUNT
+Test Name Result Unit Reference Range
+Haemoglobin 11.2 g/dL 13.0 - 17.0
+Total RBC Count 4.1 mill/cumm 4.5 - 5.5
+Total Leucocyte Count (TLC) 11,800 cells/cumm 4000 - 11000
+Platelet Count 2.4 lakhs/cumm 1.5 - 4.1
+PCV 36.5 % 40 - 50
+MCV 78 fL 83 - 101
+BLOOD SUGAR
+Fasting Blood Sugar 108 mg/dL 70 - 100
+HbA1c 5.9 % 4.0 - 5.6
+LIPID PROFILE
+Total Cholesterol 212 mg/dL < 200
+Triglycerides 145 mg/dL < 150
+HDL Cholesterol 38 mg/dL > 40
+LDL Cholesterol 145 mg/dL < 100
+THYROID PROFILE
+TSH 3.2 µIU/mL 0.4 - 4.5
+VITAMINS
+Vitamin D (25-OH) 18.5 ng/mL 30 - 100
+Vitamin B12 310 pg/mL 200 - 900
+"""
+ 
+if __name__ == "__main__":
+    res = check_ranges(parse_report(SAMPLE_REPORT))
+    for r in res:
+        print(f"{r['status']:9} {r['name']:30} {r['value']:>8g} {r['unit']:12} [{r['range_text']}]  -> {r['canonical']}")
+    print("\n" + summary_text(res))
  
