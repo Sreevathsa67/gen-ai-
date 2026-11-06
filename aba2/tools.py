@@ -87,4 +87,150 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
         for page in pdf.pages:
             pages.append(page.extract_text() or "")
     return "\n".join(pages)
+
+
+# ---------------------------------------------------------------------------
+# 3. Text -> structured results
+# ---------------------------------------------------------------------------
+NUM = r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
+ 
+HEAD_RE = re.compile(
+    rf"^(?P<name>[A-Za-z][A-Za-z0-9 ()/,.'\-]*?)\s*:?\s+"
+    rf"(?P<value>{NUM})(?P<flag>[HhLl])?(?=\s|$)(?P<rest>.*)$"
+)
+RANGE_RE = re.compile(rf"(?P<low>{NUM})\s*(?:-|–|—|to)\s*(?P<high>{NUM})")
+LT_RE = re.compile(rf"(?:<=?|≤|up\s*to|upto|less\s+than|below)\s*(?P<v>{NUM})", re.I)
+GT_RE = re.compile(rf"(?:>=?|≥|more\s+than|greater\s+than|above)\s*(?P<v>{NUM})", re.I)
+ 
+FLAG_TOKENS = {"h", "l", "high", "low", "*", "(h)", "(l)", "↑", "↓", "normal", "abnormal"}
+SKIP_WORDS = {"age", "sex", "gender", "patient", "name", "date", "page", "ref", "reference",
+              "sample", "report", "id", "uhid", "mobile", "phone", "collected", "received",
+              "lab", "dr", "doctor", "time", "method", "specimen", "test", "unit", "result",
+              "investigation", "biological", "normal", "registered", "printed", "bill"}
+ 
+ 
+def _num(x):
+    if x is None or x == "":
+        return None
+    try:
+        return float(str(x).replace(",", ""))
+    except ValueError:
+        return None
+ 
+ 
+def format_range(low, high) -> str:
+    if low is not None and high is not None:
+        return f"{low:g} - {high:g}"
+    if high is not None:
+        return f"< {high:g}"
+    if low is not None:
+        return f"> {low:g}"
+    return "not given"
+ 
+ 
+def make_result(name, value, unit="", low=None, high=None, raw_line=""):
+    """Build one result dict (used by the parser and by the agent's Gemini fallback)."""
+    return {
+        "name": str(name).strip(),
+        "canonical": normalize_test_name(str(name)),
+        "value": float(value),
+        "unit": (unit or "").strip(),
+        "low": low,
+        "high": high,
+        "range_text": format_range(low, high),
+        "status": "UNCHECKED",
+        "deviation_pct": None,
+        "raw_line": raw_line,
+    }
+ 
+ 
+def _parse_line(line: str):
+    m = HEAD_RE.match(line.strip())
+    if not m:
+        return None
+    name = m.group("name").strip(" -:.,")
+    first_word = _clean(name).split(" ")[0] if _clean(name) else ""
+    if not name or first_word in SKIP_WORDS:
+        return None
+ 
+    value = _num(m.group("value"))
+    rest = m.group("rest")
+ 
+    low = high = None
+    unit_part = rest
+    rm = RANGE_RE.search(rest)
+    if rm:
+        low, high = _num(rm.group("low")), _num(rm.group("high"))
+        unit_part = rest[: rm.start()]
+    else:
+        lt, gt = LT_RE.search(rest), GT_RE.search(rest)
+        if lt:
+            high, unit_part = _num(lt.group("v")), rest[: lt.start()]
+        elif gt:
+            low, unit_part = _num(gt.group("v")), rest[: gt.start()]
+ 
+    unit_tokens = [t for t in unit_part.split() if t.lower() not in FLAG_TOKENS]
+    unit = unit_tokens[0] if unit_tokens else ""
+ 
+    result = make_result(name, value, unit, low, high, raw_line=line.strip())
+    # keep a line only if it has a range OR is a test we recognise
+    if low is None and high is None and result["canonical"] is None:
+        return None
+    return result
+ 
+ 
+def parse_report(text: str):
+    """Parse every 'Test  Value  Unit  Range' line in the report text."""
+    results, seen = [], set()
+    for line in text.splitlines():
+        r = _parse_line(line)
+        if r and _clean(r["name"]) not in seen:
+            seen.add(_clean(r["name"]))
+            results.append(r)
+    return results
+ 
+ 
+# ---------------------------------------------------------------------------
+# 4. Range-checking tool (the agent calls this - no LLM guessing on numbers)
+# ---------------------------------------------------------------------------
+def check_ranges(results):
+    """Mark each result LOW / HIGH / NORMAL / NO_RANGE using the report's own range."""
+    checked = []
+    for r in results:
+        r = dict(r)
+        v, low, high = r["value"], r["low"], r["high"]
+        if low is None and high is None:
+            r["status"] = "NO_RANGE"
+        elif low is not None and v < low:
+            r["status"] = "LOW"
+            r["deviation_pct"] = round((v - low) / low * 100, 1) if low else None
+        elif high is not None and v > high:
+            r["status"] = "HIGH"
+            r["deviation_pct"] = round((v - high) / high * 100, 1) if high else None
+        else:
+            r["status"] = "NORMAL"
+        checked.append(r)
+    return checked
+ 
+ 
+def summary_text(results) -> str:
+    """Plain, deterministic one-paragraph summary of the checked results."""
+    if not results:
+        return "No test values could be read from this report."
+    out = [r for r in results if r["status"] in ("LOW", "HIGH")]
+    normal = [r for r in results if r["status"] == "NORMAL"]
+    no_range = [r for r in results if r["status"] == "NO_RANGE"]
+    s = f"{len(results)} tests found: {len(normal)} within the report's reference range, {len(out)} outside it"
+    s += f", {len(no_range)} without a printed range." if no_range else "."
+    if out:
+        s += " Outside range: " + ", ".join(f"{r['name']} ({r['status'].lower()})" for r in out) + "."
+    return s
+ 
+ 
+def results_to_text(results) -> str:
+    """Compact table for LLM prompts."""
+    return "\n".join(
+        f"- {r['name']}: {r['value']:g} {r['unit']} (report range {r['range_text']}) -> {r['status']}"
+        for r in results
+    )
  
