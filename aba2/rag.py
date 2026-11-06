@@ -218,3 +218,87 @@ KNOWLEDGE_BASE = [
          "albumin, kidney disease or parathyroid problems. High calcium is most often due to an overactive parathyroid "
          "gland. Doctors often correct total calcium for albumin."),
 ]
+
+def chunk_text(text: str, max_chars: int = 700):
+    """Split long text into paragraph-based chunks of at most ~max_chars."""
+    chunks, current = [], ""
+    for para in [p.strip() for p in text.split("\n\n") if p.strip()]:
+        if len(current) + len(para) + 1 <= max_chars:
+            current = f"{current} {para}".strip()
+        else:
+            if current:
+                chunks.append(current)
+            while len(para) > max_chars:  # very long paragraph -> hard split on sentences
+                cut = para.rfind(". ", 0, max_chars) + 1 or max_chars
+                chunks.append(para[:cut].strip())
+                para = para[cut:].strip()
+            current = para
+    if current:
+        chunks.append(current)
+    return chunks
+ 
+ 
+def load_text_files(folder: str):
+    """Turn every .txt/.md file in a folder into chunked documents."""
+    docs = []
+    for path in sorted(Path(folder).glob("*")):
+        if path.suffix.lower() not in (".txt", ".md"):
+            continue
+        for i, chunk in enumerate(chunk_text(path.read_text(encoding="utf-8"))):
+            docs.append({"id": f"{path.stem}_{i}", "title": path.stem.replace("_", " "),
+                         "text": chunk, "source": path.name})
+    return docs
+ 
+ 
+class MedicalRetriever:
+    """Dense retriever: Sentence-Transformers embeddings in a FAISS inner-product index
+    (vectors are L2-normalised, so inner product = cosine similarity)."""
+ 
+    def __init__(self, docs=None, model_name: str = EMBED_MODEL):
+        self.model = SentenceTransformer(model_name)
+        self.docs = []
+        self.index = None
+        self.add_documents(docs if docs is not None else KNOWLEDGE_BASE)
+ 
+    def _embed(self, texts):
+        vecs = self.model.encode(texts, convert_to_numpy=True, normalize_embeddings=True,
+                                 show_progress_bar=False)
+        return np.asarray(vecs, dtype="float32")
+ 
+    def add_documents(self, docs):
+        if not docs:
+            return
+        vecs = self._embed([f"{d['title']}. {d['text']}" for d in docs])
+        if self.index is None:
+            self.index = faiss.IndexFlatIP(vecs.shape[1])
+        self.index.add(vecs)
+        self.docs.extend(docs)
+ 
+    def retrieve(self, query: str, k: int = 3):
+        """Top-k documents for a query, each with a cosine 'score'."""
+        if self.index is None or not self.docs:
+            return []
+        scores, ids = self.index.search(self._embed([query]), min(k, len(self.docs)))
+        return [{**self.docs[i], "score": float(s)} for s, i in zip(scores[0], ids[0]) if i != -1]
+ 
+    def get(self, doc_id: str):
+        return next((d for d in self.docs if d["id"] == doc_id), None)
+ 
+ 
+def format_context(docs) -> str:
+    """De-duplicated context block for the LLM prompt."""
+    seen, parts = set(), []
+    for d in docs:
+        if d["id"] in seen:
+            continue
+        seen.add(d["id"])
+        parts.append(f"[{d['title']}] {d['text']}")
+    return "\n\n".join(parts)
+ 
+ 
+if __name__ == "__main__":
+    r = MedicalRetriever()
+    for q in ["low haemoglobin causes", "high sgpt liver", "vitamin d deficiency", "is one abnormal value a diagnosis"]:
+        print(f"\nQ: {q}")
+        for d in r.retrieve(q, k=2):
+            print(f"   {d['score']:.2f}  {d['title']}")
