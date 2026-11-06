@@ -105,3 +105,23 @@ if result:
     with tab4:
         for i, step in enumerate(result.get("trace", []), 1):
             st.markdown(f"{i}. {step}")
+            
+    st.divider()
+    st.subheader("💬 Ask a follow-up question")
+    chat = st.session_state.setdefault("chat", [])
+    for m in chat:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+ 
+    if question := st.chat_input("e.g. What does a low MCV mean?"):
+        with st.chat_message("user"):
+            st.markdown(question)
+        with st.chat_message("assistant"):
+            with st.spinner("Retrieving and thinking..."):
+                answer, docs = answer_followup(question, result, retriever, history=chat)
+            st.markdown(answer)
+            if docs:
+                st.caption("Sources: " + ", ".join(dict.fromkeys(d["title"] for d in docs)))
+        chat += [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
+ 
+st.caption("⚠️ Educational explanations only - not a medical diagnosis.")
