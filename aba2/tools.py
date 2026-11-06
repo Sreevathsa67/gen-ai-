@@ -55,3 +55,25 @@ ALIASES = {
     "potassium": ["potassium", "serum potassium"],
     "calcium": ["calcium", "serum calcium", "total calcium"],
 }
+def _clean(text: str) -> str:
+    """lowercase, punctuation -> space, collapse spaces."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", text.lower())).strip()
+ 
+ 
+# longest alias first, so "hdl cholesterol" wins over "cholesterol"
+_ALIAS_LIST = sorted(
+    ((_clean(a), canon) for canon, aliases in ALIASES.items() for a in aliases),
+    key=lambda pair: len(pair[0]),
+    reverse=True,
+)
+ 
+ 
+def normalize_test_name(name: str):
+    """Return the canonical id for a test name, or None if unknown."""
+    cleaned = _clean(name)
+    for alias, canon in _ALIAS_LIST:
+        if re.search(rf"\b{re.escape(alias)}\b", cleaned):
+            return canon
+    return None
+ 
+ 
