@@ -77,3 +77,14 @@ def normalize_test_name(name: str):
     return None
  
  
+# ---------------------------------------------------------------------------
+# 2. PDF -> text
+# ---------------------------------------------------------------------------
+def extract_text_from_pdf(file_bytes: bytes) -> str:
+    """Extract text from a text-based PDF (scanned/image PDFs return '')."""
+    pages = []
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            pages.append(page.extract_text() or "")
+    return "\n".join(pages)
+ 
